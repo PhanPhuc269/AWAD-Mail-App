@@ -105,6 +105,7 @@ export default function SearchPage() {
             isSearching={isLoading}
             placeholder="Tìm kiếm email (hỗ trợ fuzzy)..."
             className="w-full"
+            enableSuggestions={true}
           />
         </div>
       </div>

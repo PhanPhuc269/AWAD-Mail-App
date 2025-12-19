@@ -126,4 +126,29 @@ export const emailService = {
     });
     return response.data;
   },
+
+  semanticSearch: async (
+    query: string,
+    limit = 20,
+    offset = 0
+  ): Promise<EmailsResponse> => {
+    const response = await apiClient.post<EmailsResponse>(
+      "/emails/search/semantic",
+      { query, limit, offset }
+    );
+    return response.data;
+  },
+
+  getSearchSuggestions: async (
+    query: string,
+    limit = 5
+  ): Promise<{ suggestions: string[] }> => {
+    const response = await apiClient.get<{ suggestions: string[] }>(
+      "/emails/search/suggestions",
+      {
+        params: { q: query, limit },
+      }
+    );
+    return response.data;
+  },
 };

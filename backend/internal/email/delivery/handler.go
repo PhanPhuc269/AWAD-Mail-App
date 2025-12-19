@@ -531,3 +531,216 @@ func (h *EmailHandler) FuzzySearch(c *gin.Context) {
 		Total:  total,
 	})
 }
+
+// POST /emails/search/semantic
+// SemanticSearch handles semantic search using vector embeddings
+func (h *EmailHandler) SemanticSearch(c *gin.Context) {
+	var req struct {
+		Query  string `json:"query" binding:"required"`
+		Limit  int    `json:"limit"`
+		Offset int    `json:"offset"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	if req.Query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing query"})
+		return
+	}
+
+	user, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+	userData, ok := user.(*authdomain.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user data"})
+		return
+	}
+	userID := userData.ID
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := req.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	ctx := c.Request.Context()
+	emails, total, err := h.emailUsecase.SemanticSearch(ctx, userID, req.Query, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, emaildto.EmailsResponse{
+		Emails: emails,
+		Limit:  limit,
+		Offset: offset,
+		Total:  total,
+	})
+}
+
+// GET /emails/search/suggestions?q=query&limit=5
+// GetSearchSuggestions returns search suggestions
+func (h *EmailHandler) GetSearchSuggestions(c *gin.Context) {
+	query := c.Query("q")
+	if query == "" {
+		c.JSON(http.StatusOK, gin.H{"suggestions": []string{}})
+		return
+	}
+
+	user, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+	userData, ok := user.(*authdomain.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user data"})
+		return
+	}
+	userID := userData.ID
+
+	limit := 5
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 && parsed <= 10 {
+			limit = parsed
+		}
+	}
+
+	ctx := c.Request.Context()
+	suggestions, err := h.emailUsecase.GetSearchSuggestions(ctx, userID, query, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"suggestions": suggestions})
+}
+
+// GET /emails/kanban/columns
+// GetKanbanColumns returns all Kanban columns for the authenticated user
+func (h *EmailHandler) GetKanbanColumns(c *gin.Context) {
+	user, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+	userData, ok := user.(*authdomain.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user data"})
+		return
+	}
+	userID := userData.ID
+
+	columns, err := h.emailUsecase.GetKanbanColumns(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"columns": columns})
+}
+
+// POST /emails/kanban/columns
+// CreateKanbanColumn creates a new Kanban column
+func (h *EmailHandler) CreateKanbanColumn(c *gin.Context) {
+	var req struct {
+		Name      string `json:"name" binding:"required"`
+		Order     int    `json:"order"`
+		GmailLabel string `json:"gmail_label"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	user, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+	userData, ok := user.(*authdomain.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user data"})
+		return
+	}
+	userID := userData.ID
+
+	column, err := h.emailUsecase.CreateKanbanColumn(userID, req.Name, req.Order, req.GmailLabel)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, column)
+}
+
+// PUT /emails/kanban/columns/:id
+// UpdateKanbanColumn updates an existing Kanban column
+func (h *EmailHandler) UpdateKanbanColumn(c *gin.Context) {
+	columnID := c.Param("id")
+	var req struct {
+		Name      string `json:"name" binding:"required"`
+		Order     int    `json:"order"`
+		GmailLabel string `json:"gmail_label"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	user, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+	userData, ok := user.(*authdomain.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user data"})
+		return
+	}
+	userID := userData.ID
+
+	column, err := h.emailUsecase.UpdateKanbanColumn(userID, columnID, req.Name, req.Order, req.GmailLabel)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, column)
+}
+
+// DELETE /emails/kanban/columns/:id
+// DeleteKanbanColumn deletes a Kanban column
+func (h *EmailHandler) DeleteKanbanColumn(c *gin.Context) {
+	columnID := c.Param("id")
+
+	user, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+	userData, ok := user.(*authdomain.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid user data"})
+		return
+	}
+	userID := userData.ID
+
+	if err := h.emailUsecase.DeleteKanbanColumn(userID, columnID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "column deleted"})
+}

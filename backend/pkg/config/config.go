@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -26,6 +27,12 @@ type Config struct {
 	DBSSLMode          string
 	GeminiApiKey       string
 	EncryptionKey      string // 32-byte key for AES encryption
+	ChromaHost         string
+	ChromaPort         int
+	ChromaCloudAPIKey  string
+	ChromaTenant       string
+	ChromaDatabase     string
+	UseChromaCloud     bool
 }
 
 func Load() *Config {
@@ -65,12 +72,28 @@ func Load() *Config {
 		DBSSLMode:          getEnv("DB_SSLMODE", "disable"),
 		GeminiApiKey:       os.Getenv("GEMINI_API_KEY"),
 		EncryptionKey:      getEnv("ENCRYPTION_KEY", "12345678901234567890123456789012"), // Default for dev only
+		ChromaHost:         getEnv("CHROMA_HOST", "localhost"),
+		ChromaPort:         getEnvInt("CHROMA_PORT", 8000),
+		ChromaCloudAPIKey:  os.Getenv("CHROMA_API_KEY"),
+		ChromaTenant:       os.Getenv("CHROMA_TENANT"),
+		ChromaDatabase:     os.Getenv("CHROMA_DATABASE"),
+		UseChromaCloud:     os.Getenv("CHROMA_API_KEY") != "", // Use cloud if API key is set
 	}
 }
 
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
+	}
+	return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		var result int
+		if _, err := fmt.Sscanf(value, "%d", &result); err == nil {
+			return result
+		}
 	}
 	return defaultValue
 }

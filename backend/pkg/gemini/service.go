@@ -1,70 +1,83 @@
 package gemini
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+
+	"github.com/google/generative-ai-go/genai"
+	"google.golang.org/api/option"
 )
 
 type GeminiService struct {
-	ApiKey string
+	client *genai.Client
 }
 
-func NewGeminiService(apiKey string) *GeminiService {
-	return &GeminiService{ApiKey: apiKey}
+func NewGeminiService(apiKey string) (*GeminiService, error) {
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
+	}
+
+	return &GeminiService{
+		client: client,
+	}, nil
+}
+
+// GenerateEmbedding generates an embedding for the given text using Gemini embedding model
+func (g *GeminiService) GenerateEmbedding(ctx context.Context, text string) ([]float32, error) {
+	// Truncate text if too long (Gemini has 2048 token limit)
+	if len(text) > 8000 {
+		text = text[:8000]
+	}
+
+	// Use the embedding model
+	model := g.client.EmbeddingModel("models/text-embedding-004")
+
+	// Generate embedding
+	resp, err := model.EmbedContent(ctx, genai.Text(text))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate embedding: %w", err)
+	}
+
+	// Extract embedding values
+	if resp.Embedding == nil || len(resp.Embedding.Values) == 0 {
+		return nil, fmt.Errorf("no embedding values in response")
+	}
+
+	embeddingVector := make([]float32, len(resp.Embedding.Values))
+	for i, v := range resp.Embedding.Values {
+		embeddingVector[i] = float32(v)
+	}
+
+	return embeddingVector, nil
 }
 
 func (g *GeminiService) SummarizeEmail(ctx context.Context, emailText string) (string, error) {
-	// Use gemini-2.5-pro as requested
-	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + g.ApiKey
+	// Use gemini-2.5-flash for summarization
+	model := g.client.GenerativeModel("gemini-2.5-flash")
 
-	payload := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{"parts": []map[string]string{{"text": emailText}}},
-		},
-	}
+	prompt := "Hãy tóm tắt nội dung email sau bằng tiếng Việt, chỉ nêu ý chính, không thêm nhận xét cá nhân: " + emailText
 
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Gemini API error: %s", string(respBody))
+		return "", fmt.Errorf("failed to generate summary: %w", err)
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", err
+	// Extract text from response
+	if len(resp.Candidates) == 0 {
+		return "", fmt.Errorf("no candidates in response")
 	}
 
-	// Parse summary from response
-	if c, ok := result["candidates"].([]interface{}); ok && len(c) > 0 {
-		if cand, ok := c[0].(map[string]interface{}); ok {
-			if content, ok := cand["content"].(map[string]interface{}); ok {
-				if parts, ok := content["parts"].([]interface{}); ok && len(parts) > 0 {
-					if part, ok := parts[0].(map[string]interface{}); ok {
-						if text, ok := part["text"].(string); ok {
-							return text, nil
-						}
-					}
-				}
-			}
-		}
+	candidate := resp.Candidates[0]
+	if len(candidate.Content.Parts) == 0 {
+		return "", fmt.Errorf("no content parts in response")
 	}
-	return "", fmt.Errorf("no summary returned")
+
+	part := candidate.Content.Parts[0]
+	if textPart, ok := part.(genai.Text); ok {
+		return string(textPart), nil
+	}
+
+	return "", fmt.Errorf("unexpected response format")
 }

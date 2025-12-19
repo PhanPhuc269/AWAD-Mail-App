@@ -57,6 +57,14 @@ func SetupRoutes(r *gin.Engine, authUsecase authUsecase.AuthUsecase, emailUsecas
 			emails.POST("/:id/archive", emailHandler.ArchiveEmail)
 			emails.POST("/watch", emailHandler.WatchMailbox)
 			emails.GET("/search", emailHandler.FuzzySearch)
+			emails.POST("/search/semantic", emailHandler.SemanticSearch)
+			emails.GET("/search/suggestions", emailHandler.GetSearchSuggestions)
+			
+			// Kanban column configuration
+			emails.GET("/kanban/columns", emailHandler.GetKanbanColumns)
+			emails.POST("/kanban/columns", emailHandler.CreateKanbanColumn)
+			emails.PUT("/kanban/columns/:id", emailHandler.UpdateKanbanColumn)
+			emails.DELETE("/kanban/columns/:id", emailHandler.DeleteKanbanColumn)
 		}
 	}
 }

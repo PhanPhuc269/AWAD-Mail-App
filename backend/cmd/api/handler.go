@@ -1,6 +1,8 @@
 package api
 
 import (
+	"log"
+
 	authUsecase "ga03-backend/internal/auth/usecase"
 	emailUsecase "ga03-backend/internal/email/usecase"
 	"ga03-backend/pkg/config"
@@ -19,9 +21,13 @@ type Handler struct {
 
 func NewHandler(authUsecase authUsecase.AuthUsecase, emailUsecase emailUsecase.EmailUsecase, sseManager *sse.Manager, cfg *config.Config) *Handler {
 	// Khởi tạo GeminiService từ API key trong config
-	geminiSvc := gemini.NewGeminiService(cfg.GeminiApiKey)
-	// Gán GeminiService vào emailUsecase qua interface
-	emailUsecase.SetGeminiService(geminiSvc)
+	geminiSvc, err := gemini.NewGeminiService(cfg.GeminiApiKey)
+	if err != nil {
+		log.Printf("Warning: Failed to initialize Gemini service: %v", err)
+	} else {
+		// Gán GeminiService vào emailUsecase qua interface
+		emailUsecase.SetGeminiService(geminiSvc)
+	}
 	return &Handler{
 		authUsecase:  authUsecase,
 		emailUsecase: emailUsecase,

@@ -6,14 +6,18 @@ import (
 	authrepo "ga03-backend/internal/auth/repository"
 	emaildomain "ga03-backend/internal/email/domain"
 	"ga03-backend/internal/email/repository"
+	"ga03-backend/pkg/chroma"
 	"ga03-backend/pkg/config"
 	"ga03-backend/pkg/fuzzy"
 	"ga03-backend/pkg/imap"
 	"ga03-backend/pkg/utils/crypto"
+	"log"
 	"mime/multipart"
 	"sort"
 	"strings"
 	"time"
+
+	chromacloud "github.com/amikos-tech/chroma-go/pkg/api/v2"
 
 	"golang.org/x/oauth2"
 )
@@ -21,6 +25,7 @@ import (
 // emailUsecase implements EmailUsecase interface
 type emailUsecase struct {
 	emailRepo     repository.EmailRepository
+	kanbanRepo    repository.KanbanRepository
 	userRepo      authrepo.UserRepository
 	mailProvider  emaildomain.MailProvider // Gmail Provider
 	imapProvider  *imap.IMAPService        // IMAP Provider
@@ -28,22 +33,37 @@ type emailUsecase struct {
 	topicName     string
 	geminiService interface {
 		SummarizeEmail(ctx context.Context, emailText string) (string, error)
+		GenerateEmbedding(ctx context.Context, text string) ([]float32, error)
 	}
-	kanbanStatus map[string]string // emailID -> status
+	chromaClient     *chroma.ChromaClient
+	chromaCollection chromacloud.Collection // Cloud Collection
+	kanbanStatus     map[string]string      // emailID -> status
 }
 
 // SetGeminiService allows wiring GeminiService after creation
 func (u *emailUsecase) SetGeminiService(svc interface {
 	SummarizeEmail(ctx context.Context, emailText string) (string, error)
+	GenerateEmbedding(ctx context.Context, text string) ([]float32, error)
 }) {
 	u.geminiService = svc
 }
 
+// SetChromaClient sets the ChromaDB client
+func (u *emailUsecase) SetChromaClient(client interface{}, collection interface{}) {
+	if c, ok := client.(*chroma.ChromaClient); ok {
+		u.chromaClient = c
+	}
+	if col, ok := collection.(chromacloud.Collection); ok {
+		u.chromaCollection = col
+	}
+}
+
 // NewEmailUsecase creates a new instance of emailUsecase
-func NewEmailUsecase(emailRepo repository.EmailRepository, userRepo authrepo.UserRepository, mailProvider emaildomain.MailProvider, imapProvider *imap.IMAPService, cfg *config.Config, topicName string) EmailUsecase {
+func NewEmailUsecase(emailRepo repository.EmailRepository, kanbanRepo repository.KanbanRepository, userRepo authrepo.UserRepository, mailProvider emaildomain.MailProvider, imapProvider *imap.IMAPService, cfg *config.Config, topicName string) EmailUsecase {
 	// GeminiService cần được truyền vào khi khởi tạo
 	uc := &emailUsecase{
 		emailRepo:     emailRepo,
+		kanbanRepo:    kanbanRepo,
 		userRepo:      userRepo,
 		mailProvider:  mailProvider,
 		imapProvider:  imapProvider,
@@ -822,4 +842,251 @@ func (u *emailUsecase) FuzzySearch(userID, query string, limit, offset int) ([]*
 	}
 
 	return result, total, nil
+}
+
+// SemanticSearch performs semantic search using vector embeddings
+func (u *emailUsecase) SemanticSearch(ctx context.Context, userID, query string, limit, offset int) ([]*emaildomain.Email, int, error) {
+	if u.chromaClient == nil || u.chromaCollection == nil {
+		// Fallback to fuzzy search if ChromaDB is not configured
+		return u.FuzzySearch(userID, query, limit, offset)
+	}
+
+	// Query ChromaDB for similar emails using query text
+	// ChromaDB will automatically generate embeddings using the Gemini embedding function
+	results, err := u.chromaClient.QuerySimilarEmails(ctx, u.chromaCollection, query, userID, limit*2) // Get more results for pagination
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to query embeddings: %w", err)
+	}
+
+	if results == nil {
+		return []*emaildomain.Email{}, 0, nil
+	}
+
+	// Get email IDs from results using GetIDGroups() (returns []DocumentIDs)
+	idGroups := results.GetIDGroups()
+	if len(idGroups) == 0 || len(idGroups[0]) == 0 {
+		return []*emaildomain.Email{}, 0, nil
+	}
+
+	// Get email IDs from first query result group
+	emailIDs := make([]string, len(idGroups[0]))
+	for i, docID := range idGroups[0] {
+		emailIDs[i] = string(docID)
+	}
+	if len(emailIDs) == 0 {
+		return []*emaildomain.Email{}, 0, nil
+	}
+
+	// Fetch emails by IDs
+	emails := make([]*emaildomain.Email, 0, len(emailIDs))
+	for _, emailID := range emailIDs {
+		email, err := u.GetEmailByID(userID, emailID)
+		if err == nil && email != nil {
+			emails = append(emails, email)
+		}
+	}
+
+	total := len(emails)
+
+	// Apply pagination
+	if offset >= total {
+		return []*emaildomain.Email{}, total, nil
+	}
+
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+
+	return emails[offset:end], total, nil
+}
+
+// GetSearchSuggestions returns search suggestions based on user's email data
+func (u *emailUsecase) GetSearchSuggestions(ctx context.Context, userID, query string, limit int) ([]string, error) {
+	user, err := u.userRepo.FindByID(userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, fmt.Errorf("user not found")
+	}
+
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return []string{}, nil
+	}
+
+	suggestions := make(map[string]bool)
+	maxSuggestions := limit
+	if maxSuggestions <= 0 {
+		maxSuggestions = 5
+	}
+
+	// Fetch recent emails to extract suggestions
+	var emails []*emaildomain.Email
+	if user.Provider == "imap" {
+		decryptedPass, err := crypto.Decrypt(user.ImapPassword, u.config.EncryptionKey)
+		if err == nil {
+			emails, _, _ = u.imapProvider.GetEmails(ctx, user.ImapServer, user.ImapPort, user.Email, decryptedPass, "INBOX", 100, 0)
+		}
+	} else {
+		accessToken, refreshToken, _ := u.getUserTokens(userID)
+		if accessToken != "" {
+			emails, _, _ = u.mailProvider.GetEmails(ctx, accessToken, refreshToken, "INBOX", 100, 0, "", u.makeTokenUpdateCallback(userID))
+		} else {
+			emails, _, _ = u.emailRepo.GetEmailsByMailbox("INBOX", 100, 0)
+		}
+	}
+
+	// Extract unique senders and subject keywords
+	for _, email := range emails {
+		// Add sender names
+		if email.FromName != "" {
+			nameLower := strings.ToLower(email.FromName)
+			if strings.Contains(nameLower, query) && len(suggestions) < maxSuggestions {
+				suggestions[email.FromName] = true
+			}
+		}
+
+		// Add sender emails
+		if email.From != "" {
+			fromLower := strings.ToLower(email.From)
+			if strings.Contains(fromLower, query) && len(suggestions) < maxSuggestions {
+				suggestions[email.From] = true
+			}
+		}
+
+		// Add subject keywords
+		if email.Subject != "" {
+			subjectLower := strings.ToLower(email.Subject)
+			words := strings.Fields(subjectLower)
+			for _, word := range words {
+				if len(word) > 2 && strings.HasPrefix(word, query) && len(suggestions) < maxSuggestions {
+					suggestions[word] = true
+				}
+			}
+		}
+	}
+
+	// Convert to slice
+	result := make([]string, 0, len(suggestions))
+	for s := range suggestions {
+		result = append(result, s)
+	}
+
+	// Sort by length (shorter first, then alphabetically)
+	sort.Slice(result, func(i, j int) bool {
+		if len(result[i]) != len(result[j]) {
+			return len(result[i]) < len(result[j])
+		}
+		return result[i] < result[j]
+	})
+
+	// Limit results
+	if len(result) > maxSuggestions {
+		result = result[:maxSuggestions]
+	}
+
+	return result, nil
+}
+
+// StoreEmailEmbedding stores an email embedding in ChromaDB
+// ChromaDB will automatically generate embeddings using the Gemini embedding function
+func (u *emailUsecase) StoreEmailEmbedding(ctx context.Context, userID string, email *emaildomain.Email) error {
+	if u.chromaClient == nil || u.chromaCollection == nil {
+		return nil // Silently skip if ChromaDB is not configured
+	}
+
+	// Store in ChromaDB - embeddings will be auto-generated by ChromaDB's Gemini embedding function
+	// Pass nil for embedding since ChromaDB will generate it automatically
+	err := u.chromaClient.AddEmailEmbedding(ctx, u.chromaCollection, email.ID, userID, email.Subject, email.Body, nil)
+	if err != nil {
+		log.Printf("Failed to store embedding for email %s: %v", email.ID, err)
+		return err
+	}
+
+	return nil
+}
+
+// GetKanbanColumns returns all Kanban columns for a user
+func (u *emailUsecase) GetKanbanColumns(userID string) ([]*emaildomain.KanbanColumn, error) {
+	if u.kanbanRepo == nil {
+		// Return default columns if repository is not configured
+		return []*emaildomain.KanbanColumn{
+			{ID: "inbox", UserID: userID, Name: "Inbox", Order: 0, GmailLabel: "INBOX"},
+			{ID: "todo", UserID: userID, Name: "To Do", Order: 1, GmailLabel: "STARRED"},
+			{ID: "done", UserID: userID, Name: "Done", Order: 2, GmailLabel: ""},
+			{ID: "snoozed", UserID: userID, Name: "Snoozed", Order: 3, GmailLabel: ""},
+		}, nil
+	}
+	return u.kanbanRepo.GetColumnsByUserID(userID)
+}
+
+// CreateKanbanColumn creates a new Kanban column
+func (u *emailUsecase) CreateKanbanColumn(userID, name string, order int, gmailLabel string) (*emaildomain.KanbanColumn, error) {
+	if u.kanbanRepo == nil {
+		return nil, fmt.Errorf("kanban repository not configured")
+	}
+
+	column := &emaildomain.KanbanColumn{
+		ID:         fmt.Sprintf("%s_%d", userID, time.Now().UnixNano()),
+		UserID:     userID,
+		Name:       name,
+		Order:      order,
+		GmailLabel: gmailLabel,
+	}
+
+	if err := u.kanbanRepo.CreateColumn(column); err != nil {
+		return nil, err
+	}
+
+	return column, nil
+}
+
+// UpdateKanbanColumn updates an existing Kanban column
+func (u *emailUsecase) UpdateKanbanColumn(userID, columnID, name string, order int, gmailLabel string) (*emaildomain.KanbanColumn, error) {
+	if u.kanbanRepo == nil {
+		return nil, fmt.Errorf("kanban repository not configured")
+	}
+
+	column, err := u.kanbanRepo.GetColumnByID(columnID)
+	if err != nil {
+		return nil, err
+	}
+	if column == nil {
+		return nil, fmt.Errorf("column not found")
+	}
+	if column.UserID != userID {
+		return nil, fmt.Errorf("unauthorized")
+	}
+
+	column.Name = name
+	column.Order = order
+	column.GmailLabel = gmailLabel
+
+	if err := u.kanbanRepo.UpdateColumn(column); err != nil {
+		return nil, err
+	}
+
+	return column, nil
+}
+
+// DeleteKanbanColumn deletes a Kanban column
+func (u *emailUsecase) DeleteKanbanColumn(userID, columnID string) error {
+	if u.kanbanRepo == nil {
+		return fmt.Errorf("kanban repository not configured")
+	}
+
+	column, err := u.kanbanRepo.GetColumnByID(columnID)
+	if err != nil {
+		return err
+	}
+	if column == nil {
+		return fmt.Errorf("column not found")
+	}
+	if column.UserID != userID {
+		return fmt.Errorf("unauthorized")
+	}
+
+	return u.kanbanRepo.DeleteColumn(columnID)
 }

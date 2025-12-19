@@ -26,7 +26,15 @@ type EmailUsecase interface {
 	MoveEmailToMailbox(userID, emailID, mailboxID string) error
 	SnoozeEmail(userID, emailID string, snoozeUntil time.Time) error
 	FuzzySearch(userID, query string, limit, offset int) ([]*emaildomain.Email, int, error)
+	SemanticSearch(ctx context.Context, userID, query string, limit, offset int) ([]*emaildomain.Email, int, error)
+	GetSearchSuggestions(ctx context.Context, userID, query string, limit int) ([]string, error)
+	GetKanbanColumns(userID string) ([]*emaildomain.KanbanColumn, error)
+	CreateKanbanColumn(userID, name string, order int, gmailLabel string) (*emaildomain.KanbanColumn, error)
+	UpdateKanbanColumn(userID, columnID, name string, order int, gmailLabel string) (*emaildomain.KanbanColumn, error)
+	DeleteKanbanColumn(userID, columnID string) error
 	SetGeminiService(svc interface {
 		SummarizeEmail(ctx context.Context, emailText string) (string, error)
+		GenerateEmbedding(ctx context.Context, text string) ([]float32, error)
 	})
+	SetChromaClient(client interface{}, collection interface{})
 }
