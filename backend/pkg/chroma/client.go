@@ -35,15 +35,18 @@ func NewChromaClient(cloudAPIKey, tenant, database string) (*ChromaClient, error
 		return nil, fmt.Errorf("CHROMA_API_KEY is required for Chroma Cloud Client")
 	}
 
-	// Create client options
+	log.Printf("Creating Chroma Cloud Client with API Key (has tenant: %v, has database: %v)", tenant != "", database != "")
+
+	// Create client options - For ChromaDB Cloud, only API key is needed
+	// The cloud service will handle tenant/database automatically from the API key
 	opts := []chromacloud.ClientOption{
 		chromacloud.WithCloudAPIKey(cloudAPIKey),
 	}
-	if tenant != "" && database != "" {
-		opts = append(opts, chromacloud.WithDatabaseAndTenant(database, tenant))
-	} else if tenant != "" {
-		opts = append(opts, chromacloud.WithTenant(tenant))
-	}
+
+	// Note: WithDatabaseAndTenant may cause client to connect to local server
+	// For ChromaDB Cloud, API key alone should be sufficient
+	// If tenant/database are needed, they should be specified via collection name or metadata
+	log.Printf("Using ChromaDB Cloud with API key only (tenant/database handled by cloud)")
 
 	// Create Cloud Client
 	client, err := chromacloud.NewHTTPClient(opts...)
@@ -65,7 +68,7 @@ func NewChromaClient(cloudAPIKey, tenant, database string) (*ChromaClient, error
 		ef = &GeminiEmbeddingFunctionAdapter{geminiEF: geminiEF}
 	}
 
-	log.Printf("Using Chroma Cloud Client")
+	log.Printf("Chroma Cloud Client created successfully")
 	return &ChromaClient{
 		client:         client,
 		embeddingFunc:  ef,

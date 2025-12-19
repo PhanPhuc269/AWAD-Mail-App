@@ -9,7 +9,7 @@ import MailboxList from "@/components/inbox/MailboxList";
 import EmailList from "@/components/inbox/EmailList";
 import EmailDetail from "@/components/inbox/EmailDetail";
 import ComposeEmail from "@/components/inbox/ComposeEmail";
-import SearchBar from "@/components/search/SearchBar";
+import SemanticSearchBar from "@/components/search/SemanticSearchBar";
 import { useQueryClient, useMutation } from "@tanstack/react-query";
 import { API_BASE_URL } from "@/config/api";
 import KanbanToggle from "@/components/kanban/KanbanToggle";
@@ -72,16 +72,6 @@ export default function InboxPage() {
   const selectedMailboxId = mailbox || "inbox";
   const selectedEmailId = emailId || null;
 
-  const handleSearch = (query: string) => {
-    const trimmed = query.trim();
-    if (!trimmed) return;
-    // Navigate to dedicated search page with query param
-    navigate(`/search?q=${encodeURIComponent(trimmed)}`);
-  };
-
-  const handleClearSearch = () => {
-    // No-op for now – clearing happens inside SearchPage
-  };
 
   useEffect(() => {
     if (user) {
@@ -322,13 +312,11 @@ export default function InboxPage() {
           </span>
         </div>
 
-        {/* Search Bar */}
-        <div className="flex-1 max-w-md mx-4 hidden md:block">
-          <SearchBar
-            onSearch={handleSearch}
-            onClear={handleClearSearch}
-            isSearching={false}
-            placeholder="Tìm kiếm email (hỗ trợ fuzzy)..."
+        {/* Semantic Search Bar with Auto-Suggestions */}
+        <div className="flex-1 max-w-xl mx-4 hidden md:block">
+          <SemanticSearchBar
+            placeholder="Tìm kiếm email..."
+            enableSuggestions={true}
           />
         </div>
 

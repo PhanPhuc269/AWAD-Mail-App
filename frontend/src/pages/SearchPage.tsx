@@ -13,6 +13,7 @@ export default function SearchPage() {
 
   const initialQuery = searchParams.get("q") || "";
   const initialPage = Number(searchParams.get("page") || "1");
+  const useSemantic = searchParams.get("semantic") === "true";
 
   const [query, setQuery] = useState(initialQuery);
   const [searchQuery, setSearchQuery] = useState(initialQuery); // Debounced query for actual search
@@ -36,15 +37,19 @@ export default function SearchPage() {
     // Sync URL params when searchQuery/page change (not query, to avoid URL spam)
     const params: Record<string, string> = {};
     if (searchQuery) params.q = searchQuery;
+    if (useSemantic) params.semantic = "true";
     if (currentPage > 1) params.page = String(currentPage);
     setSearchParams(params, { replace: true });
-  }, [searchQuery, currentPage, setSearchParams]);
+  }, [searchQuery, currentPage, useSemantic, setSearchParams]);
 
   // Fetch search results with pagination (use searchQuery, not query)
+  // Use semantic search if semantic param is true, otherwise use fuzzy search
   const { data, isLoading, error } = useQuery({
-    queryKey: ["searchEmails", searchQuery, ITEMS_PER_PAGE, offset],
+    queryKey: ["searchEmails", searchQuery, ITEMS_PER_PAGE, offset, useSemantic],
     queryFn: () =>
-      emailService.fuzzySearch(searchQuery, ITEMS_PER_PAGE, offset),
+      useSemantic
+        ? emailService.semanticSearch(searchQuery, ITEMS_PER_PAGE, offset)
+        : emailService.fuzzySearch(searchQuery, ITEMS_PER_PAGE, offset),
     enabled: searchQuery.trim().length > 0,
   });
 
@@ -103,7 +108,7 @@ export default function SearchPage() {
             onSearch={handleSearch}
             onClear={handleClear}
             isSearching={isLoading}
-            placeholder="Tìm kiếm email (hỗ trợ fuzzy)..."
+            placeholder={useSemantic ? "Tìm kiếm email với AI (semantic)..." : "Tìm kiếm email (hỗ trợ fuzzy)..."}
             className="w-full"
             enableSuggestions={true}
           />

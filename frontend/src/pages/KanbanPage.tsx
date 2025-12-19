@@ -16,6 +16,7 @@ import type { KanbanColumn } from "@/components/kanban/KanbanBoard";
 import KanbanToggle from "@/components/kanban/KanbanToggle";
 import KanbanFilters, { type SortOption, type FilterState } from "@/components/kanban/KanbanFilters";
 import { SnoozeDialog } from "@/components/inbox/SnoozeDialog";
+import SemanticSearchBar from "@/components/search/SemanticSearchBar";
 
 export default function KanbanPage() {
   const navigate = useNavigate();
@@ -482,6 +483,15 @@ export default function KanbanPage() {
             Email Client AI - Kanban
           </span>
         </div>
+
+        {/* Semantic Search Bar with Auto-Suggestions */}
+        <div className="flex-1 max-w-xl mx-4 hidden md:block">
+          <SemanticSearchBar
+            placeholder="Tìm kiếm email..."
+            enableSuggestions={true}
+          />
+        </div>
+
         <KanbanToggle isKanban={true} onToggle={() => navigate("/inbox")} />
       </div>
 

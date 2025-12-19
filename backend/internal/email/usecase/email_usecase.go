@@ -901,8 +901,115 @@ func (u *emailUsecase) SemanticSearch(ctx context.Context, userID, query string,
 	return emails[offset:end], total, nil
 }
 
-// GetSearchSuggestions returns search suggestions based on user's email data
+// GetSearchSuggestions returns search suggestions using semantic search (vector DB)
+// This finds semantically related email content (subjects, keywords) to suggest to users
 func (u *emailUsecase) GetSearchSuggestions(ctx context.Context, userID, query string, limit int) ([]string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []string{}, nil
+	}
+
+	maxSuggestions := limit
+	if maxSuggestions <= 0 {
+		maxSuggestions = 5
+	}
+
+	// Use semantic search (vector DB) to find similar email subjects/keywords
+	// This will find conceptually related content even if exact words don't match
+	if u.chromaClient == nil || u.chromaCollection == nil {
+		// Fallback to simple string matching if ChromaDB is not available
+		return u.getSearchSuggestionsFallback(ctx, userID, query, maxSuggestions)
+	}
+
+	// Query ChromaDB for semantically similar email content
+	// We query for more results to extract diverse suggestions
+	results, err := u.chromaClient.QuerySimilarEmails(ctx, u.chromaCollection, query, userID, maxSuggestions*3)
+	if err != nil {
+		// Fallback to simple matching on error
+		return u.getSearchSuggestionsFallback(ctx, userID, query, maxSuggestions)
+	}
+
+	if results == nil {
+		return []string{}, nil
+	}
+
+	// Get email IDs from results
+	idGroups := results.GetIDGroups()
+	if len(idGroups) == 0 || len(idGroups[0]) == 0 {
+		return []string{}, nil
+	}
+
+	suggestions := make(map[string]bool)
+	emailIDs := idGroups[0]
+
+	// Fetch emails by IDs to get subjects and sender names
+	for _, docID := range emailIDs {
+		emailID := string(docID)
+		email, err := u.GetEmailByID(userID, emailID)
+		if err == nil && email != nil {
+			// Add subject as suggestion
+			if email.Subject != "" && len(suggestions) < maxSuggestions {
+				suggestions[email.Subject] = true
+			}
+			// Add sender name as suggestion
+			if email.FromName != "" && len(suggestions) < maxSuggestions {
+				suggestions[email.FromName] = true
+			}
+			if len(suggestions) >= maxSuggestions {
+				break
+			}
+		}
+	}
+
+	// If we don't have enough suggestions, add more from recent emails
+	if len(suggestions) < maxSuggestions {
+		user, err := u.userRepo.FindByID(userID)
+		if err == nil && user != nil {
+			// Fetch emails to extract sender names
+			var emails []*emaildomain.Email
+			if user.Provider == "imap" {
+				decryptedPass, err := crypto.Decrypt(user.ImapPassword, u.config.EncryptionKey)
+				if err == nil {
+					emails, _, _ = u.imapProvider.GetEmails(ctx, user.ImapServer, user.ImapPort, user.Email, decryptedPass, "INBOX", 30, 0)
+				}
+			} else {
+				accessToken, refreshToken, _ := u.getUserTokens(userID)
+				if accessToken != "" {
+					emails, _, _ = u.mailProvider.GetEmails(ctx, accessToken, refreshToken, "INBOX", 30, 0, "", u.makeTokenUpdateCallback(userID))
+				} else {
+					emails, _, _ = u.emailRepo.GetEmailsByMailbox("INBOX", 30, 0)
+				}
+			}
+
+			// Add sender names as suggestions
+			queryLower := strings.ToLower(query)
+			for _, email := range emails {
+				if email.FromName != "" && len(suggestions) < maxSuggestions {
+					nameLower := strings.ToLower(email.FromName)
+					if strings.Contains(nameLower, queryLower) {
+						suggestions[email.FromName] = true
+					}
+				}
+			}
+		}
+	}
+
+	// Convert to slice and limit
+	result := make([]string, 0, len(suggestions))
+	for s := range suggestions {
+		result = append(result, s)
+	}
+
+	// Limit results
+	if len(result) > maxSuggestions {
+		result = result[:maxSuggestions]
+	}
+
+	return result, nil
+}
+
+// getSearchSuggestionsFallback provides simple string-based suggestions when vector DB is unavailable
+func (u *emailUsecase) getSearchSuggestionsFallback(ctx context.Context, userID, query string, limit int) ([]string, error) {
 	user, err := u.userRepo.FindByID(userID)
 	if err != nil {
 		return nil, err
@@ -911,16 +1018,8 @@ func (u *emailUsecase) GetSearchSuggestions(ctx context.Context, userID, query s
 		return nil, fmt.Errorf("user not found")
 	}
 
-	query = strings.ToLower(strings.TrimSpace(query))
-	if query == "" {
-		return []string{}, nil
-	}
-
+	queryLower := strings.ToLower(strings.TrimSpace(query))
 	suggestions := make(map[string]bool)
-	maxSuggestions := limit
-	if maxSuggestions <= 0 {
-		maxSuggestions = 5
-	}
 
 	// Fetch recent emails to extract suggestions
 	var emails []*emaildomain.Email
@@ -943,27 +1042,16 @@ func (u *emailUsecase) GetSearchSuggestions(ctx context.Context, userID, query s
 		// Add sender names
 		if email.FromName != "" {
 			nameLower := strings.ToLower(email.FromName)
-			if strings.Contains(nameLower, query) && len(suggestions) < maxSuggestions {
+			if strings.Contains(nameLower, queryLower) && len(suggestions) < limit {
 				suggestions[email.FromName] = true
 			}
 		}
 
-		// Add sender emails
-		if email.From != "" {
-			fromLower := strings.ToLower(email.From)
-			if strings.Contains(fromLower, query) && len(suggestions) < maxSuggestions {
-				suggestions[email.From] = true
-			}
-		}
-
-		// Add subject keywords
-		if email.Subject != "" {
+		// Add subjects as suggestions
+		if email.Subject != "" && len(suggestions) < limit {
 			subjectLower := strings.ToLower(email.Subject)
-			words := strings.Fields(subjectLower)
-			for _, word := range words {
-				if len(word) > 2 && strings.HasPrefix(word, query) && len(suggestions) < maxSuggestions {
-					suggestions[word] = true
-				}
+			if strings.Contains(subjectLower, queryLower) {
+				suggestions[email.Subject] = true
 			}
 		}
 	}
@@ -974,17 +1062,9 @@ func (u *emailUsecase) GetSearchSuggestions(ctx context.Context, userID, query s
 		result = append(result, s)
 	}
 
-	// Sort by length (shorter first, then alphabetically)
-	sort.Slice(result, func(i, j int) bool {
-		if len(result[i]) != len(result[j]) {
-			return len(result[i]) < len(result[j])
-		}
-		return result[i] < result[j]
-	})
-
 	// Limit results
-	if len(result) > maxSuggestions {
-		result = result[:maxSuggestions]
+	if len(result) > limit {
+		result = result[:limit]
 	}
 
 	return result, nil
